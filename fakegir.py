@@ -1,230 +1,325 @@
+#!/usr/bin/python3.4
 """Build a fake python package from the information found in gir files"""
+
 import os
+import sys
 import keyword
+import shutil
 from lxml import etree
 
 GIR_PATH = '/usr/share/gir-1.0/'
-FAKEGIR_PATH = os.path.join(os.path.expanduser('~'), '.cache/fakegir')
+FAKEGIR_PATH = os.path.expanduser('~/.cache/fakegir')
 XMLNS = "http://www.gtk.org/introspection/core/1.0"
+
+
+# Pretty output
+if sys.stdout.isatty():
+    def errmsg(string):
+        print("\033[1;31m%s\033[0m" % string)
+
+    def statusmsg(string):
+        print("\033[32m%s\033[0m" % string)
+
+    def aboutmsg(string):
+        print("\033[34m%s\033[0m" % string)
+else:
+    def errmsg(string):
+        print("ERROR: %s" % string)
+
+    def statusmsg(string):
+        print(string)
+
+    def aboutmsg(string):
+        print(string)
 
 
 def get_docstring(callable_tag):
     """Return docstring text for a callable"""
-    for element in callable_tag:
-        tag = etree.QName(element)
-        if tag.localname == 'doc':
-            return element.text.replace("\\x", 'x').encode('utf-8') + b"\n"
-    return ''
+    doc = callable_tag.find("{%s}doc" % XMLNS)
+    return ""
+    return doc.text.replace("\\x", "x").replace("\"\"\"", "\" \" \"") if doc is not None else ""
 
 
 def get_parameter_type(element):
     """Returns the type of a parameter"""
-    parm_type = ""
-    for elem_property in element:
-        tag = etree.QName(elem_property)
-        if tag.localname == "type":
-            parm_type = elem_property.attrib['name']
-            break
-
-    return parm_type
+    tp = element.find("{%s}type" % XMLNS)
+    return tp.get("name", "") if tp is not None else ""
 
 
 def get_parameters(element):
     """Return the parameters of a callable"""
     params = []
-    for elem_property in element:
-        tag = etree.QName(elem_property)
-        if tag.localname == 'parameters':
-            for param in elem_property:
-                try:
-                    subtag = etree.QName(param)
-                    if subtag.localname == "instance-parameter":
-                        param_name = 'self'
-                    else:
-                        param_name = param.attrib['name']
+    for elem_property in element.iterchildren("{%s}parameters" % XMLNS):
+        for param in elem_property:
+            try:
+                subtag = etree.QName(param)
+                if subtag.localname == "instance-parameter":
+                    param_name = 'self'
+                else:
+                    param_name = param.get("name", "_arg%i" % len(params))
 
-                    parm_type = get_parameter_type(param)
-
-                    if keyword.iskeyword(param_name):
+                    if keyword.iskeyword(param_name) or param_name == "self":
                         param_name = "_" + param_name
 
-                    if not param_name in params:
-                        params.append((param_name, parm_type))
-                except KeyError:
-                    pass
+                parm_type = get_parameter_type(param)
+
+                if param_name in params:
+                    param_name += "_%i" % len(params)
+
+                params.append((param_name, parm_type))
+            except KeyError:
+                pass
     return params
 
 
-def insert_function(name, args, depth, docstring=''):
-    """Returns a function as a string"""
+def insert_function(name, args, depth, docstring='', type="function"):
+    """Yields a function definition"""
+    indent1 = '    ' * (depth + 1)
+
+    yield "\n"
+
+    if type == "static method":
+        yield '    ' * depth + "@staticmethod\n"
+
     if keyword.iskeyword(name):
         name = "_" + name
-    arglist = ", ".join([arg[0] for arg in args])
 
-    epydoc_str = "\n".join(
-                 ["@param %s: %s" % (pname, ptype) if pname != "self" else ""
-                  for (pname, ptype) in args])
+    signature = name + "(" + ", ".join((arg[0] if arg[0] != "..." else "*args" for arg in args)) + ")"
+    statusmsg(indent1 + "Adding %s %s" % (type, signature))
 
-    full_docstr = "\n".join(
-                  ['    '*(depth+1) + l
-                   for l in (docstring +
-                             "\n" +
-                             epydoc_str +
-                             "\n").split("\n")])
-    return "%sdef %s(%s):\n%s\"\"\"\n%s\"\"\"\n" % (
-        '    ' * depth, name, arglist, '    ' * (depth + 1), full_docstr
-    )
+    yield "%sdef %s:\n" % ('    ' if depth else '', signature)
+
+    # docstring
+    yield indent1
+    yield "\"\"\"\n"
+    # params
+    if len(args) > depth: # HAX: depth==1 only if method with self argument
+        for pname, tp in args:
+            if pname == "self": continue
+            yield "%s@param %s: %s\n" % (indent1, pname, tp)
+        yield "\n"
+    # real docstring
+    yield from (indent1 + line + "\n" for line in docstring.split("\n"))
+    # end docstring
+    yield indent1
+    yield "\"\"\"\n"
 
 
 def insert_enum(element):
-    """Returns an enum (class with attributes only) as text"""
-    enum_name = element.attrib['name']
-    docstring = get_docstring(element)
-    enum_content = "class %s:\n    \"\"\"%s\"\"\"\n" % (enum_name, docstring)
-    members = element.findall("{%s}member" % XMLNS)
-    for member in members:
-        enum_name = member.attrib['name']
-        if enum_name[0].isdigit():
-            enum_name = '_' + enum_name
-        enum_value = member.attrib['value']
-        enum_value = enum_value.replace('\\', '\\\\')
-        enum_content += "    %s = '%s'\n" % (enum_name.upper(), enum_value)
-    return enum_content
+    """Yields a class definition with members only"""
+    yield "\n\n"
+
+    statusmsg("    Adding enum %s" % element.get("name"))
+
+    # Class definition
+    yield "class %s:\n" % element.get("name")
+
+    yield "    \"\"\"\n"
+    yield from ('    ' + line + "\n" for line in get_docstring(element).split("\n"))
+    yield "    \"\"\"\n"
+
+    # Members
+    for member in element.iterchildren("{%s}member" % XMLNS):
+        name = member.get("name")
+
+        # There seems to be some broken member without a name?
+        if not name:
+            errmsg("        Enumeration member with empty name!")
+            continue
+
+        if name[0].isdigit():
+            name = "_" + name
+
+        yield "    %s = '%s'\n" % (name.upper(), member.get("value", "None").replace("\\", "\\\\"))
 
 
-def extract_methods(class_tag):
-    """Return methods from a class element"""
-    methods_content = ''
-    for element in class_tag:
+def insert_class(cls, parents):
+    """Yields a complete class definition"""
+
+    # class definition
+    yield "\n\nclass "
+
+    signature = "".join((cls.get("name"), "(", ", ".join(parents), ")"))
+    statusmsg("    Adding class %s" % signature)
+
+    yield signature
+    yield ":\n    \"\"\"\n"
+    yield from ('    ' + line + "\n" for line in get_docstring(cls).split("\n"))
+    yield "    \"\"\"\n"
+
+    has_constructor = False
+    for constructor in cls.iterchildren("{%s}constructor"):
+        params, doc = get_parameters(constructor), get_docstring(constructor)
+        if not has_constructor:
+            yield from insert_function("__init__", params, 1, doc, "method")
+            has_constructor = True
+        # FIXME: should we add these?
+        #yield from insert_function(constructor.get("name"), params, 1, doc, "method")
+
+    for meth in cls.iterchildren("{%s}method" % XMLNS):
+        yield from insert_function(meth.get("name"), get_parameters(meth), 1, get_docstring(meth), "method")
+
+    for func in cls.iterchildren("{%s}function" % XMLNS):
+        yield from insert_function(func.get("name"), get_parameters(func), 1, get_docstring(func), "static method")
+
+
+def process(elements):
+    """Extract information from a gir namespace"""
+    classes = []
+
+    for element in elements:
         tag = etree.QName(element)
-        if tag.localname == 'method':
-            method_name = element.attrib['name']
-            docstring = get_docstring(element)
-            params = get_parameters(element)
-            methods_content += insert_function(method_name, params, 1,
-                                               docstring)
-    return methods_content
+        tag_name = tag.localname
 
+        if tag_name in ('class', 'interface'):
+            classes.append(element)
 
-def build_classes(classes):
-    """Order classes with correct dependency order also return external
-    imports"""
-    classes_text = ""
-    imports = set()
+        elif (tag_name == 'enumeration') or (tag_name == "bitfield"):
+            yield "enum", insert_enum(element)
+
+        elif tag_name == 'function':
+            yield "func", insert_function(element.get("name"), get_parameters(element), 0, get_docstring(element))
+
+        elif tag_name == 'constant':
+            yield "const", "".join((element.get("name"), " = \"", element.get("value", "None").replace("\\", "\\\\"), "\"\n"))
+
+    # Fix classes and imports
     local_parents = set()
     written_classes = set()
-    all_classes = set([class_info[0] for class_info in classes])
-    for class_info in classes:
-        parents = class_info[1]
+    all_classes = set(map(lambda x: x.get("name"), classes))
+
+    parents = {}
+    for cls in classes:
+        parents[cls] = []
+
+        if cls.get("parent"):
+            parents[cls].append(cls.get("parent"))
+
+        for implement in cls.iterfind("{%s}implements" % XMLNS):
+            parents[cls].append(implement.get('name'))
+
         local_parents = local_parents.union(set([class_parent
-                                                 for class_parent in parents
+                                                 for class_parent in parents[cls]
                                                  if '.' not in class_parent]))
+
     while written_classes != all_classes:
-        for class_name, parents, class_content in classes:
-            skip = False
-            for parent in parents:
-                if '.' not in parent and parent not in written_classes:
-                    skip = True
-            if class_name in written_classes:
-                skip = True
-            if skip:
+        for cls in classes:
+            if any(('.' not in parent and parent not in written_classes for parent in parents[cls])):
                 continue
-            classes_text += class_content
-            written_classes.add(class_name)
-            for parent_class in parents:
-                if '.' in parent_class:
-                    imports.add(parent_class[:parent_class.index('.')])
-    return classes_text, imports
+
+            if cls in written_classes:
+                continue
+
+            for parent in parents[cls]:
+                if "." in parent:
+                    yield "import", parent[:parent.rindex(".")]
+
+            yield "class", insert_class(cls, parents[cls])
+            written_classes.add(cls.get("name"))
 
 
 def extract_namespace(namespace):
-    """Extract all information from a gir namespace"""
-    namespace_content = ""
+    """Yield all definitions"""
+    funcs = []
+    enums = []
+    consts = []
     classes = []
-    for element in namespace:
-        tag = etree.QName(element)
-        tag_name = tag.localname
-        if tag_name in ('class', 'interface'):
-            class_name = element.attrib['name']
-            docstring = get_docstring(element)
-            parents = []
-            parent = element.attrib.get('parent')
-            if parent:
-                parents.append(parent)
-            implements = element.findall('{%s}implements' % XMLNS)
-            for implement in implements:
-                parents.append(implement.attrib['name'])
-            class_content = ("\nclass %s(%s):\n    \"\"\"%s\"\"\"\n"
-                             % (class_name, ", ".join(parents), docstring))
-            class_content += extract_methods(element)
-            classes.append((class_name, parents, class_content))
-        if (tag_name == 'enumeration') or (tag_name == "bitfield"):
-            namespace_content += insert_enum(element)
-        if tag_name == 'function':
-            function_name = element.attrib['name']
-            docstring = get_docstring(element)
-            params = get_parameters(element)
-            namespace_content += insert_function(function_name, params, 0,
-                                                 docstring)
-        if tag_name == 'constant':
-            constant_name = element.attrib['name']
-            constant_value = element.attrib['value'] or 'None'
-            constant_value = constant_value.replace("\\", "\\\\")
-            namespace_content += ("%s = r\"\"\"%s\"\"\"\n"
-                                  % (constant_name, constant_value))
-    classes_content, imports = build_classes(classes)
-    namespace_content += classes_content
-    imports_text = ""
-    for _import in imports:
-        imports_text += "import %s\n" % _import
+    imports = set()
 
-    namespace_content = imports_text + namespace_content
-    return namespace_content
+    for what, value in process(namespace):
+        if what == "import":
+            imports.add(value)
+        elif what == "class":
+            classes.append(value)
+        elif what == "enum":
+            enums.append(value)
+        elif what == "func":
+            funcs.append(value)
+        elif what == "const":
+            consts.append(value)
+        else:
+            errmsg("Unknown type %s: %s" % (what, value))
+
+    # Imports
+    for name in imports:
+        statusmsg("    Import %s" % name)
+        yield "from . import %s\n" % name
+
+    yield "\n"
+
+    # Constants
+    #for const in consts:
+    #    statusmsg("    const %s" % const)
+    yield from consts
+
+    # Enums
+    for enum in enums:
+        yield from enum
+
+    # Classes
+    for cls in classes:
+        yield from cls
+
+    # Functions
+    for func in funcs:
+        yield from func
 
 
 def parse_gir(gir_path):
     """Extract everything from a gir file"""
     parser = etree.XMLParser(encoding='utf-8', recover=True)
-    content = open(gir_path).read()
-    root = etree.XML(content, parser)
+    root = etree.parse(gir_path, parser)
     namespace = root.findall('{%s}namespace' % XMLNS)[0]
-    namespace_content = extract_namespace(namespace)
-    return namespace_content
+    return extract_namespace(namespace)
 
 
-def iter_girs():
-    """Return a generator of all available gir files"""
-    for gir_file in os.listdir(GIR_PATH):
+def iter_girs(gir_repo):
+    """Yield all available gir files"""
+    for gir_file in os.listdir(gir_repo):
         # Don't know what to do with those, guess nobody uses PyGObject
         # for Gtk 2.0 anyway
         if gir_file in ('Gtk-2.0.gir', 'Gdk-2.0.gir', 'GdkX11-2.0.gir'):
             continue
         module_name = gir_file[:gir_file.index('-')]
-        gir_info = (module_name, gir_file)
-        yield gir_info
+        yield (module_name, gir_file)
 
 
-def generate_fakegir():
+def touch(filename):
+    open(filename, "a").close()
+
+
+def main(argv):
     """Main function"""
-    fakegir_repo_dir = os.path.join(FAKEGIR_PATH, 'gi/repository')
-    if not os.path.exists(fakegir_repo_dir):
-        os.makedirs(fakegir_repo_dir)
+    aboutmsg("FakeGIR 2014.05.03")
+    aboutmsg("GObject Repository path: %s" % GIR_PATH)
+    aboutmsg("FakeGIR path: %s" % FAKEGIR_PATH)
+    statusmsg("Creating repository...")
 
-    gi_init_path = os.path.join(FAKEGIR_PATH, 'gi/__init__.py')
-    with open(gi_init_path, 'w') as gi_init_file:
-        gi_init_file.write('')
-    repo_init_path = os.path.join(FAKEGIR_PATH, 'gi/repository/__init__.py')
-    with open(repo_init_path, 'w') as repo_init_file:
-        repo_init_file.write('')
+    if os.path.exists(FAKEGIR_PATH):
+        shutil.rmtree(FAKEGIR_PATH)
 
-    for module_name, gir_file in iter_girs():
-        gir_path = os.path.join(GIR_PATH, gir_file)
-        fakegir_content = parse_gir(gir_path)
-        fakegir_path = os.path.join(FAKEGIR_PATH, 'gi/repository',
-                                    module_name + ".py")
-        with open(fakegir_path, 'w') as fakegir_file:
-            fakegir_file.write("# -*- coding: utf-8 -*-\n")
-            fakegir_file.write(fakegir_content)
+    repository = os.path.join(FAKEGIR_PATH, "gi", "repository")
+    os.makedirs(repository)
+
+    with open(os.path.join(FAKEGIR_PATH, "gi", "__init__.py"), "w") as f:
+        f.write("print(\"NOTE: Tried to load fakeGIR; consider removing it from PYTHONPATH!\")\n")
+        f.write("import sys\n")
+        f.write("sys.path.remove(\"%s\")\n" % FAKEGIR_PATH)
+        f.write("del sys.modules[\"gi\"]\n")
+        f.write("import gi\n")
+    touch(os.path.join(FAKEGIR_PATH, "gi", "repository", "__init__.py"))
+
+    for name, file in iter_girs(GIR_PATH):
+        statusmsg("Generating %s" % name)
+        gir = os.path.join(GIR_PATH, file)
+
+        content = parse_gir(gir)
+        fakegir = os.path.join(repository, name + ".py")
+
+        with open(fakegir, 'w') as fakegir_file:
+            fakegir_file.write("#!/usr/bin/python3\n# This file is auto-generated!!!\n\n")
+            for chunk in content:
+                fakegir_file.write(chunk)
 
 if __name__ == "__main__":
-    generate_fakegir()
+    main(sys.argv)
