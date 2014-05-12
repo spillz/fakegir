@@ -36,7 +36,6 @@ else:
 def get_docstring(callable_tag):
     """Return docstring text for a callable"""
     doc = callable_tag.find("{%s}doc" % XMLNS)
-    return ""
     return doc.text.replace("\\x", "x").replace("\"\"\"", "\" \" \"") if doc is not None else ""
 
 
