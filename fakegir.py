@@ -1,4 +1,4 @@
-#!/usr/bin/python3.4
+#!/usr/bin/python3
 """Build a fake python package from the information found in gir files"""
 
 import os
@@ -7,9 +7,11 @@ import keyword
 import shutil
 from lxml import etree
 
-GIR_PATH = '/usr/share/gir-1.0/'
-FAKEGIR_PATH = os.path.expanduser('~/.cache/fakegir')
+GIR_PATH = "/usr/share/gir-1.0/"
+GIR_FILES = ("GLib-2.0.gir", "Gio-2.0.gir", "GObject-2.0.gir", "Gtk-3.0.gir", "Atk-1.0.gir", "Gdk-3.0.gir")
+FAKEGIR_PATH = os.path.expanduser("~/.cache/fakegir")
 XMLNS = "http://www.gtk.org/introspection/core/1.0"
+INDENT = "    "
 
 
 # Pretty output
@@ -33,12 +35,6 @@ else:
         print(string)
 
 
-def get_docstring(callable_tag):
-    """Return docstring text for a callable"""
-    doc = callable_tag.find("{%s}doc" % XMLNS)
-    return doc.text.replace("\\x", "x").replace("\"\"\"", "\" \" \"") if doc is not None else ""
-
-
 def get_parameter_type(element):
     """Returns the type of a parameter"""
     tp = element.find("{%s}type" % XMLNS)
@@ -53,7 +49,7 @@ def get_parameters(element):
             try:
                 subtag = etree.QName(param)
                 if subtag.localname == "instance-parameter":
-                    param_name = 'self'
+                    param_name = "self"
                 else:
                     param_name = param.get("name", "_arg%i" % len(params))
 
@@ -71,51 +67,37 @@ def get_parameters(element):
     return params
 
 
-def insert_function(name, args, depth, docstring='', type="function"):
+def insert_function(name, args, depth, type="function"):
     """Yields a function definition"""
-    indent1 = '    ' * (depth + 1)
+    indents = INDENT * (depth + 1)
 
-    yield "\n"
+    if depth != 0:
+        yield "\n"
+    else:
+        yield "\n\n"
 
     if type == "static method":
-        yield '    ' * depth + "@staticmethod\n"
+        yield INDENT * depth + "@staticmethod\n"
 
     if keyword.iskeyword(name):
         name = "_" + name
 
     signature = name + "(" + ", ".join((arg[0] if arg[0] != "..." else "*args" for arg in args)) + ")"
-    statusmsg(indent1 + "Adding %s %s" % (type, signature))
+    statusmsg(indents + "Adding %s %s" % (type, signature))
 
-    yield "%sdef %s:\n" % ('    ' if depth else '', signature)
-
-    # docstring
-    yield indent1
-    yield "\"\"\"\n"
-    # params
-    if len(args) > depth: # HAX: depth==1 only if method with self argument
-        for pname, tp in args:
-            if pname == "self": continue
-            yield "%s@param %s: %s\n" % (indent1, pname, tp)
-        yield "\n"
-    # real docstring
-    yield from (indent1 + line + "\n" for line in docstring.split("\n"))
-    # end docstring
-    yield indent1
-    yield "\"\"\"\n"
+    yield "%sdef %s:\n" % (INDENT if depth else "", signature)
+    yield indents
+    yield "pass\n"
 
 
 def insert_enum(element):
     """Yields a class definition with members only"""
     yield "\n\n"
 
-    statusmsg("    Adding enum %s" % element.get("name"))
+    statusmsg(INDENT + "Adding enum %s" % element.get("name"))
 
     # Class definition
-    yield "class %s:\n" % element.get("name")
-
-    yield "    \"\"\"\n"
-    yield from ('    ' + line + "\n" for line in get_docstring(element).split("\n"))
-    yield "    \"\"\"\n"
+    yield "class %s(Enum):\n" % element.get("name")
 
     # Members
     for member in element.iterchildren("{%s}member" % XMLNS):
@@ -123,43 +105,50 @@ def insert_enum(element):
 
         # There seems to be some broken member without a name?
         if not name:
-            errmsg("        Enumeration member with empty name!")
+            errmsg(INDENT * 2 + "Enumeration member with empty name!")
             continue
 
         if name[0].isdigit():
             name = "_" + name
 
-        yield "    %s = '%s'\n" % (name.upper(), member.get("value", "None").replace("\\", "\\\\"))
+        yield INDENT + "%s = %s\n" % (name.upper(), member.get("value", "None").replace("\\", "\\\\"))
 
 
 def insert_class(cls, parents):
     """Yields a complete class definition"""
-
     # class definition
     yield "\n\nclass "
 
     signature = "".join((cls.get("name"), "(", ", ".join(parents), ")"))
-    statusmsg("    Adding class %s" % signature)
+    statusmsg(INDENT + "Adding class %s" % signature)
 
     yield signature
-    yield ":\n    \"\"\"\n"
-    yield from ('    ' + line + "\n" for line in get_docstring(cls).split("\n"))
-    yield "    \"\"\"\n"
+    yield ":\n"
 
-    has_constructor = False
-    for constructor in cls.iterchildren("{%s}constructor"):
-        params, doc = get_parameters(constructor), get_docstring(constructor)
-        if not has_constructor:
-            yield from insert_function("__init__", params, 1, doc, "method")
-            has_constructor = True
-        # FIXME: should we add these?
-        #yield from insert_function(constructor.get("name"), params, 1, doc, "method")
+    empty_class = True
+
+    for constructor in cls.iterchildren("{%s}constructor" % XMLNS):
+        if constructor.get("deprecated") is None:
+            empty_class = False
+            yield from insert_function(constructor.get("name"), get_parameters(constructor), 1, "static method")
 
     for meth in cls.iterchildren("{%s}method" % XMLNS):
-        yield from insert_function(meth.get("name"), get_parameters(meth), 1, get_docstring(meth), "method")
+        if meth.get("deprecated") is None:
+            empty_class = False
+            yield from insert_function(meth.get("name"), get_parameters(meth), 1, "method")
+
+    for meth in cls.iterchildren("{%s}virtual-method" % XMLNS):
+        if meth.get("deprecated") is None:
+            empty_class = False
+            yield from insert_function("do_%s" % meth.get("name"), get_parameters(meth), 1, "method")
 
     for func in cls.iterchildren("{%s}function" % XMLNS):
-        yield from insert_function(func.get("name"), get_parameters(func), 1, get_docstring(func), "static method")
+        if func.get("deprecated") is None:
+            empty_class = False
+            yield from insert_function(func.get("name"), get_parameters(func), 1, "static method")
+
+    if empty_class:
+        yield INDENT + "pass\n"
 
 
 def process(elements):
@@ -170,22 +159,27 @@ def process(elements):
         tag = etree.QName(element)
         tag_name = tag.localname
 
-        if tag_name in ('class', 'interface'):
+        if tag_name in ("class", "interface"):
             classes.append(element)
 
-        elif (tag_name == 'enumeration') or (tag_name == "bitfield"):
+        elif (tag_name in ("enumeration", "bitfield")) and (element.get("deprecated") is None):
             yield "enum", insert_enum(element)
 
-        elif tag_name == 'function':
-            yield "func", insert_function(element.get("name"), get_parameters(element), 0, get_docstring(element))
+        elif (tag_name == "function") and (element.get("deprecated") is None):
+            yield "func", insert_function(element.get("name"), get_parameters(element), 0)
 
-        elif tag_name == 'constant':
-            yield "const", "".join((element.get("name"), " = \"", element.get("value", "None").replace("\\", "\\\\"), "\"\n"))
+        elif tag_name == "constant" and (element.get("deprecated") is None):
+            if element.find("{%s}type" % XMLNS).get("name") == "utf8":
+                yield "const", "".join((element.get("name"), " = \"", element.get("value", "None").replace("\\", "\\\\"), "\"\n"))
+            elif element.find("{%s}type" % XMLNS).get("name") == "gboolean" and element.get("value", "None") == "true":
+                yield "const", "".join((element.get("name"), " = True\n"))
+            elif element.find("{%s}type" % XMLNS).get("name") == "gboolean" and element.get("value", "None") == "false":
+                yield "const", "".join((element.get("name"), " = False\n"))
+            else:
+                yield "const", "".join((element.get("name"), " = ", element.get("value", "None").replace("\\", "\\\\"), "\n"))
 
-    # Fix classes and imports
+    # Yield classes and imports
     local_parents = set()
-    written_classes = set()
-    all_classes = set(map(lambda x: x.get("name"), classes))
 
     parents = {}
     for cls in classes:
@@ -195,26 +189,18 @@ def process(elements):
             parents[cls].append(cls.get("parent"))
 
         for implement in cls.iterfind("{%s}implements" % XMLNS):
-            parents[cls].append(implement.get('name'))
+            parents[cls].append(implement.get("name"))
 
         local_parents = local_parents.union(set([class_parent
                                                  for class_parent in parents[cls]
-                                                 if '.' not in class_parent]))
+                                                 if "." not in class_parent]))
 
-    while written_classes != all_classes:
-        for cls in classes:
-            if any(('.' not in parent and parent not in written_classes for parent in parents[cls])):
-                continue
+    for cls in classes:
+        for parent in parents[cls]:
+            if "." in parent:
+                yield "import", parent[:parent.rindex(".")]
 
-            if cls in written_classes:
-                continue
-
-            for parent in parents[cls]:
-                if "." in parent:
-                    yield "import", parent[:parent.rindex(".")]
-
-            yield "class", insert_class(cls, parents[cls])
-            written_classes.add(cls.get("name"))
+        yield "class", insert_class(cls, parents[cls])
 
 
 def extract_namespace(namespace):
@@ -240,16 +226,18 @@ def extract_namespace(namespace):
             errmsg("Unknown type %s: %s" % (what, value))
 
     # Imports
+    if len(enums) > 0:
+        yield "from enum import Enum\n"
+
     for name in imports:
-        statusmsg("    Import %s" % name)
+        statusmsg(INDENT + "Import %s" % name)
         yield "from . import %s\n" % name
 
     yield "\n"
 
     # Constants
-    #for const in consts:
-    #    statusmsg("    const %s" % const)
-    yield from consts
+    for const in consts:
+        yield from const
 
     # Enums
     for enum in enums:
@@ -266,30 +254,24 @@ def extract_namespace(namespace):
 
 def parse_gir(gir_path):
     """Extract everything from a gir file"""
-    parser = etree.XMLParser(encoding='utf-8', recover=True)
+    parser = etree.XMLParser(encoding="utf-8", recover=True)
     root = etree.parse(gir_path, parser)
-    namespace = root.findall('{%s}namespace' % XMLNS)[0]
+    namespace = root.findall("{%s}namespace" % XMLNS)[0]
     return extract_namespace(namespace)
 
 
 def iter_girs(gir_repo):
     """Yield all available gir files"""
     for gir_file in os.listdir(gir_repo):
-        # Don't know what to do with those, guess nobody uses PyGObject
-        # for Gtk 2.0 anyway
-        if gir_file in ('Gtk-2.0.gir', 'Gdk-2.0.gir', 'GdkX11-2.0.gir'):
+        if gir_file not in GIR_FILES:
             continue
-        module_name = gir_file[:gir_file.index('-')]
+        module_name = gir_file[:gir_file.index("-")]
         yield (module_name, gir_file)
-
-
-def touch(filename):
-    open(filename, "a").close()
 
 
 def main(argv):
     """Main function"""
-    aboutmsg("FakeGIR 2014.05.03")
+    aboutmsg("FakeGIR 2015")
     aboutmsg("GObject Repository path: %s" % GIR_PATH)
     aboutmsg("FakeGIR path: %s" % FAKEGIR_PATH)
     statusmsg("Creating repository...")
@@ -300,13 +282,8 @@ def main(argv):
     repository = os.path.join(FAKEGIR_PATH, "gi", "repository")
     os.makedirs(repository)
 
-    with open(os.path.join(FAKEGIR_PATH, "gi", "__init__.py"), "w") as f:
-        f.write("print(\"NOTE: Tried to load fakeGIR; consider removing it from PYTHONPATH!\")\n")
-        f.write("import sys\n")
-        f.write("sys.path.remove(\"%s\")\n" % FAKEGIR_PATH)
-        f.write("del sys.modules[\"gi\"]\n")
-        f.write("import gi\n")
-    touch(os.path.join(FAKEGIR_PATH, "gi", "repository", "__init__.py"))
+    open(os.path.join(FAKEGIR_PATH, "gi", "__init__.py"), "a").close()
+    open(os.path.join(FAKEGIR_PATH, "gi", "repository", "__init__.py"), "a").close()
 
     for name, file in iter_girs(GIR_PATH):
         statusmsg("Generating %s" % name)
@@ -315,8 +292,8 @@ def main(argv):
         content = parse_gir(gir)
         fakegir = os.path.join(repository, name + ".py")
 
-        with open(fakegir, 'w') as fakegir_file:
-            fakegir_file.write("#!/usr/bin/python3\n# This file is auto-generated!!!\n\n")
+        with open(fakegir, "w") as fakegir_file:
+            fakegir_file.write("#!/usr/bin/python3\n\n")
             for chunk in content:
                 fakegir_file.write(chunk)
 
