@@ -169,19 +169,20 @@ def process(elements):
             yield "func", insert_function(element.get("name"), get_parameters(element), 0)
 
         elif tag_name == "constant" and (element.get("deprecated") is None):
-            if element.find("{%s}type" % XMLNS).get("name") == "utf8":
-                yield "const", "".join((element.get("name"), " = \"", element.get("value", "None").replace("\\", "\\\\"), "\"\n"))
-            elif element.find("{%s}type" % XMLNS).get("name") == "gboolean" and element.get("value", "None") == "true":
-                yield "const", "".join((element.get("name"), " = True\n"))
-            elif element.find("{%s}type" % XMLNS).get("name") == "gboolean" and element.get("value", "None") == "false":
-                yield "const", "".join((element.get("name"), " = False\n"))
+            type = element.find("{%s}type" % XMLNS).get("name")
+            value = element.get("value", "None")
+
+            if type == "utf8":
+                yield "const", "".join((element.get("name"), " = \"", value.replace("\\", "\\\\"), "\"\n"))
+            elif type == "gboolean":
+                yield "const", "".join((element.get("name"), " = ", value.title(), "\n"))
             else:
-                yield "const", "".join((element.get("name"), " = ", element.get("value", "None").replace("\\", "\\\\"), "\n"))
+                yield "const", "".join((element.get("name"), " = ", value, "\n"))
 
     # Yield classes and imports
-    local_parents = set()
-
+    ordered_classes = []
     parents = {}
+
     for cls in classes:
         parents[cls] = []
 
@@ -191,11 +192,23 @@ def process(elements):
         for implement in cls.iterfind("{%s}implements" % XMLNS):
             parents[cls].append(implement.get("name"))
 
-        local_parents = local_parents.union(set([class_parent
-                                                 for class_parent in parents[cls]
-                                                 if "." not in class_parent]))
+    while True:
+        changed = False
+        for cls in classes:
+            local_parents = set([class_parent for class_parent in parents[cls] if "." not in class_parent])
+            ordered_classes_name = set(map(lambda x: x.get("name"), ordered_classes))
+            dependent = False
+            for parent in local_parents:
+                if parent not in ordered_classes_name:
+                    dependent = True
+                    break
+            if not dependent and cls not in ordered_classes:
+                ordered_classes.append(cls)
+                changed = True
+        if not changed:
+            break
 
-    for cls in classes:
+    for cls in ordered_classes:
         for parent in parents[cls]:
             if "." in parent:
                 yield "import", parent[:parent.rindex(".")]
