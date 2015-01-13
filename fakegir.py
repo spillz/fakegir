@@ -82,12 +82,22 @@ def insert_function(name, args, depth, type="function"):
     if keyword.iskeyword(name):
         name = "_" + name
 
-    signature = name + "(" + ", ".join((arg[0] if arg[0] != "..." else "*args" for arg in args)) + ")"
+    if type != "init":
+        signature = name + "(" + ", ".join((arg[0] if arg[0] != "..." else "*args" for arg in args)) + ")"
+    else:
+        signature = name + "(" + ", ".join(arg for arg in args) + ")"
     statusmsg(indents + "Adding %s %s" % (type, signature))
 
     yield "%sdef %s:\n" % (INDENT if depth else "", signature)
-    yield indents
-    yield "pass\n"
+    if (type != "init") or ((type == "init") and (len(args) == 1)):
+        yield indents
+        yield "pass\n"
+    else:
+        for arg in args:
+            if arg == "self":
+                continue
+            yield indents
+            yield "self." + arg + " = None\n"
 
 
 def insert_enum(element):
@@ -114,7 +124,7 @@ def insert_enum(element):
         yield INDENT + "%s = %s\n" % (name.upper(), member.get("value", "None").replace("\\", "\\\\"))
 
 
-def insert_class(cls, parents):
+def insert_class(cls, parents = {}, is_struct = False):
     """Yields a complete class definition"""
     # class definition
     yield "\n\nclass "
@@ -126,6 +136,13 @@ def insert_class(cls, parents):
     yield ":\n"
 
     empty_class = True
+
+    if(is_struct):
+        empty_class = False
+        fields = ["self"]
+        for field in cls.iterchildren("{%s}field" % XMLNS):
+            fields.append(field.get("name"))
+        yield from insert_function("__init__", fields, 1, "init")
 
     for constructor in cls.iterchildren("{%s}constructor" % XMLNS):
         if constructor.get("deprecated") is None:
@@ -154,13 +171,17 @@ def insert_class(cls, parents):
 def process(elements):
     """Extract information from a gir namespace"""
     classes = []
+    struct = []
 
     for element in elements:
         tag = etree.QName(element)
         tag_name = tag.localname
 
-        if tag_name in ("class", "interface"):
+        if (tag_name in ("class", "interface")) and (element.get("deprecated") is None):
             classes.append(element)
+
+        if (tag_name == "record") and (element.get("deprecated") is None):
+            struct.append(element)
 
         elif (tag_name in ("enumeration", "bitfield")) and (element.get("deprecated") is None):
             yield "enum", insert_enum(element)
@@ -214,6 +235,9 @@ def process(elements):
                 yield "import", parent[:parent.rindex(".")]
 
         yield "class", insert_class(cls, parents[cls])
+
+    for str in struct:
+        yield "class", insert_class(str, is_struct = True)
 
 
 def extract_namespace(namespace):
