@@ -154,10 +154,10 @@ def insert_class(cls, parents = {}, is_struct = False):
             empty_class = False
             yield from insert_function(meth.get("name"), get_parameters(meth), 1, "method")
 
-    for meth in cls.iterchildren("{%s}virtual-method" % XMLNS):
-        if meth.get("deprecated") is None:
+    for v_meth in cls.iterchildren("{%s}virtual-method" % XMLNS):
+        if v_meth.get("deprecated") is None:
             empty_class = False
-            yield from insert_function("do_%s" % meth.get("name"), get_parameters(meth), 1, "method")
+            yield from insert_function("do_%s" % v_meth.get("name"), get_parameters(v_meth), 1, "method")
 
     for func in cls.iterchildren("{%s}function" % XMLNS):
         if func.get("deprecated") is None:
