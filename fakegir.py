@@ -186,7 +186,7 @@ def process(elements):
         elif (tag_name in ("enumeration", "bitfield")) and (element.get("deprecated") is None):
             yield "enum", insert_enum(element)
 
-        elif (tag_name == "function") and (element.get("deprecated") is None):
+        elif (tag_name in ("function", "callback")) and (element.get("deprecated") is None):
             yield "func", insert_function(element.get("name"), get_parameters(element), 0)
 
         elif tag_name == "constant" and (element.get("deprecated") is None):
