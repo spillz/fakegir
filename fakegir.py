@@ -124,7 +124,7 @@ def insert_enum(element):
         yield INDENT + "%s = %s\n" % (name.upper(), member.get("value", "None").replace("\\", "\\\\"))
 
 
-def insert_class(cls, parents = {}, is_struct = False):
+def insert_class(cls, parents={}, is_struct=False):
     """Yields a complete class definition"""
     # class definition
     yield "\n\nclass "
