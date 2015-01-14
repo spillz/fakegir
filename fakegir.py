@@ -97,7 +97,7 @@ def insert_function(name, args, depth, type="function"):
             if arg == "self":
                 continue
             yield indents
-            yield "self." + arg + " = None\n"
+            yield "self.%s = %s\n" % (arg, arg)
 
 
 def insert_enum(element):
