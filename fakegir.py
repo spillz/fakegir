@@ -85,7 +85,7 @@ def insert_function(name, args, depth, type="function"):
     if type != "init":
         signature = name + "(" + ", ".join((arg[0] if arg[0] != "..." else "*args" for arg in args)) + ")"
     else:
-        signature = name + "(" + ", ".join(arg for arg in args) + ")"
+        signature = name + "(self)"
     statusmsg(indents + "Adding %s %s" % (type, signature))
 
     yield "%sdef %s:\n" % (INDENT if depth else "", signature)
@@ -97,7 +97,7 @@ def insert_function(name, args, depth, type="function"):
             if arg == "self":
                 continue
             yield indents
-            yield "self.%s = %s\n" % (arg, arg)
+            yield "self.%s = None\n" % arg
 
 
 def insert_enum(element):
