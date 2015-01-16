@@ -8,11 +8,39 @@ import shutil
 from lxml import etree
 
 GIR_PATH = "/usr/share/gir-1.0/"
-GIR_FILES = ("GLib-2.0.gir", "Gio-2.0.gir", "GObject-2.0.gir", "Gtk-3.0.gir", "Atk-1.0.gir", "Gdk-3.0.gir")
+GIR_FILES = ("GLib-2.0.gir", "Gio-2.0.gir", "GObject-2.0.gir",
+             "Gtk-3.0.gir", "Atk-1.0.gir", "Gdk-3.0.gir",
+             "Polkit-1.0.gir")
 FAKEGIR_PATH = os.path.expanduser("~/.cache/fakegir")
 XMLNS = "http://www.gtk.org/introspection/core/1.0"
+TYPE_MAP = {"gboolean": "bool",
+            "gpointer": "gpointer",
+            "gconstpointer": "gconstpointer",
+            "gchar": "str",
+            "guchar": "str",
+            "gint": "int",
+            "guint": "int",
+            "gint8": "int",
+            "guint8": "int",
+            "gint16": "int",
+            "guint16": "int",
+            "gint32": "int",
+            "guint32": "int",
+            "gint64": "int",
+            "guint64": "int",
+            "gshort": "int",
+            "gushort": "int",
+            "glong": "long",
+            "gulong": "long",
+            "gfloat": "float",
+            "gdouble": "float",
+            "gsize": "long",
+            "gssize": "long",
+            "goffset": "int",
+            "guintptr": "int",
+            "utf8": "unicode",
+            "none": "None"}
 INDENT = "    "
-
 
 # Pretty output
 if sys.stdout.isatty():
@@ -67,14 +95,22 @@ def get_parameters(element):
     return params
 
 
-def insert_function(name, args, depth, type="function"):
+def get_rtype(function):
+    """Return return-type of a function"""
+    assert isinstance(function, etree._Element)
+    rtag = function.find("{%s}return-value" % XMLNS)
+    child = rtag.find("{%s}type" % XMLNS)
+    if child is None:
+        return None
+    rtype = child.get("name")
+    return TYPE_MAP[rtype] if rtype in TYPE_MAP else rtype
+
+
+def insert_function(name, args, depth, type="function", rtype="None"):
     """Yields a function definition"""
     indents = INDENT * (depth + 1)
 
-    if depth != 0:
-        yield "\n"
-    else:
-        yield "\n\n"
+    yield "\n" if depth != 0 else "\n\n"
 
     if type == "static method":
         yield INDENT * depth + "@staticmethod\n"
@@ -89,15 +125,21 @@ def insert_function(name, args, depth, type="function"):
     statusmsg(indents + "Adding %s %s" % (type, signature))
 
     yield "%sdef %s:\n" % (INDENT if depth else "", signature)
+
+    # Type hint helper
+    if rtype is not "None":
+        yield indents + "\"\"\"\n"
+        yield indents + "@rtype: %s\n" % rtype
+        yield indents + "\"\"\"\n"
+
+    # Function body
     if (type != "init") or ((type == "init") and (len(args) == 1)):
-        yield indents
-        yield "pass\n"
+        yield indents + "pass\n"
     else:
         for arg in args:
             if arg == "self":
                 continue
-            yield indents
-            yield "self.%s = None\n" % arg
+            yield indents + "self.%s = None\n" % arg
 
 
 def insert_enum(element):
@@ -132,8 +174,7 @@ def insert_class(cls, parents={}, is_struct=False):
     signature = "".join((cls.get("name"), "(", ", ".join(parents), ")"))
     statusmsg(INDENT + "Adding class %s" % signature)
 
-    yield signature
-    yield ":\n"
+    yield signature + ":\n"
 
     empty_class = True
 
@@ -147,22 +188,22 @@ def insert_class(cls, parents={}, is_struct=False):
     for constructor in cls.iterchildren("{%s}constructor" % XMLNS):
         if constructor.get("deprecated") is None:
             empty_class = False
-            yield from insert_function(constructor.get("name"), get_parameters(constructor), 1, "static method")
+            yield from insert_function(constructor.get("name"), get_parameters(constructor), 1, "static method", get_rtype(constructor))
 
     for meth in cls.iterchildren("{%s}method" % XMLNS):
         if meth.get("deprecated") is None:
             empty_class = False
-            yield from insert_function(meth.get("name"), get_parameters(meth), 1, "method")
+            yield from insert_function(meth.get("name"), get_parameters(meth), 1, "method", get_rtype(meth))
 
     for v_meth in cls.iterchildren("{%s}virtual-method" % XMLNS):
         if v_meth.get("deprecated") is None:
             empty_class = False
-            yield from insert_function("do_%s" % v_meth.get("name"), get_parameters(v_meth), 1, "method")
+            yield from insert_function("do_%s" % v_meth.get("name"), get_parameters(v_meth), 1, "method", get_rtype(v_meth))
 
     for func in cls.iterchildren("{%s}function" % XMLNS):
         if func.get("deprecated") is None:
             empty_class = False
-            yield from insert_function(func.get("name"), get_parameters(func), 1, "static method")
+            yield from insert_function(func.get("name"), get_parameters(func), 1, "static method", get_rtype(func))
 
     if empty_class:
         yield INDENT + "pass\n"
@@ -187,7 +228,7 @@ def process(elements):
             yield "enum", insert_enum(element)
 
         elif (tag_name in ("function", "callback")) and (element.get("deprecated") is None):
-            yield "func", insert_function(element.get("name"), get_parameters(element), 0)
+            yield "func", insert_function(element.get("name"), get_parameters(element), 0, rtype=get_rtype(element))
 
         elif tag_name == "constant" and (element.get("deprecated") is None):
             type = element.find("{%s}type" % XMLNS).get("name")
@@ -237,7 +278,7 @@ def process(elements):
         yield "class", insert_class(cls, parents[cls])
 
     for str in struct:
-        yield "class", insert_class(str, is_struct = True)
+        yield "class", insert_class(str, is_struct=True)
 
 
 def extract_namespace(namespace):
