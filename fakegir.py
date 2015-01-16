@@ -14,8 +14,8 @@ GIR_FILES = ("GLib-2.0.gir", "Gio-2.0.gir", "GObject-2.0.gir",
 FAKEGIR_PATH = os.path.expanduser("~/.cache/fakegir")
 XMLNS = "http://www.gtk.org/introspection/core/1.0"
 TYPE_MAP = {"gboolean": "bool",
-            "gpointer": "gpointer",
-            "gconstpointer": "gconstpointer",
+            "gpointer": "None",
+            "gconstpointer": "None",
             "gchar": "str",
             "guchar": "str",
             "gint": "int",
@@ -101,7 +101,7 @@ def get_rtype(function):
     rtag = function.find("{%s}return-value" % XMLNS)
     child = rtag.find("{%s}type" % XMLNS)
     if child is None:
-        return None
+        return "None"
     rtype = child.get("name")
     return TYPE_MAP[rtype] if rtype in TYPE_MAP else rtype
 
