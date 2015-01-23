@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+##!/usr/bin/python3
 """Build a fake python package from the information found in gir files"""
 
 import os
@@ -7,9 +7,12 @@ import keyword
 import shutil
 from lxml import etree
 
+USE_ALL_GIR_FILES = False
+
 GIR_PATH = "/usr/share/gir-1.0/"
 GIR_FILES = ("GLib-2.0.gir", "Gio-2.0.gir", "GObject-2.0.gir",
              "Gtk-3.0.gir", "Atk-1.0.gir", "Gdk-3.0.gir",
+#             "Gtk-2.0.gir", "Atk-1.0.gir", "Gdk-2.0.gir", ##older versions on Ubuntu 14.04
              "Polkit-1.0.gir")
 FAKEGIR_PATH = os.path.expanduser("~/.cache/fakegir")
 XMLNS = "http://www.gtk.org/introspection/core/1.0"
@@ -62,7 +65,6 @@ else:
     def aboutmsg(string):
         print(string)
 
-
 def get_parameter_type(element):
     """Returns the type of a parameter"""
     tp = element.find("{%s}type" % XMLNS)
@@ -106,7 +108,7 @@ def get_rtype(function):
     return TYPE_MAP[rtype] if rtype in TYPE_MAP else rtype
 
 
-def insert_function(name, args, depth, type="function", rtype="None"):
+def insert_function(name, args, depth, type="function", rtype="None", doc = ''):
     """Yields a function definition"""
     indents = INDENT * (depth + 1)
 
@@ -126,10 +128,14 @@ def insert_function(name, args, depth, type="function", rtype="None"):
 
     yield "%sdef %s:\n" % (INDENT if depth else "", signature)
 
-    # Type hint helper
-    if rtype is not "None":
+    # Doc and Type hint helper
+    if rtype is not "None" or doc is not '':
         yield indents + "\"\"\"\n"
-        yield indents + "@rtype: %s\n" % rtype
+        if doc is not "None":
+            for line in doc.splitlines():
+                yield indents + line +"\n"
+        if rtype is not "None":
+            yield indents + "@rtype: %s\n" % rtype
         yield indents + "\"\"\"\n"
 
     # Function body
@@ -183,27 +189,41 @@ def insert_class(cls, parents={}, is_struct=False):
         fields = ["self"]
         for field in cls.iterchildren("{%s}field" % XMLNS):
             fields.append(field.get("name"))
-        yield from insert_function("__init__", fields, 1, "init")
+        for c in (insert_function("__init__", fields, 1, "init")):
+            yield c
+
+    for doc in cls.iterchildren("{%s}doc" % XMLNS):
+        yield INDENT + '"""\n'
+        for line in doc.text.splitlines():
+            yield INDENT + line + "\n"
+        yield INDENT + '"""\n'
 
     for constructor in cls.iterchildren("{%s}constructor" % XMLNS):
         if constructor.get("deprecated") is None:
             empty_class = False
-            yield from insert_function(constructor.get("name"), get_parameters(constructor), 1, "static method", get_rtype(constructor))
+            for c in insert_function(constructor.get("name"), get_parameters(constructor), 1, "static method", get_rtype(constructor)):
+                yield c
 
     for meth in cls.iterchildren("{%s}method" % XMLNS):
         if meth.get("deprecated") is None:
             empty_class = False
-            yield from insert_function(meth.get("name"), get_parameters(meth), 1, "method", get_rtype(meth))
+            doc = ''
+            for d in meth.iterchildren("{%s}doc" % XMLNS):
+                doc += d.text
+            for c in insert_function(meth.get("name"), get_parameters(meth), 1, "method", get_rtype(meth), doc):
+                yield c
 
     for v_meth in cls.iterchildren("{%s}virtual-method" % XMLNS):
         if v_meth.get("deprecated") is None:
             empty_class = False
-            yield from insert_function("do_%s" % v_meth.get("name"), get_parameters(v_meth), 1, "method", get_rtype(v_meth))
+            for c in insert_function("do_%s" % v_meth.get("name"), get_parameters(v_meth), 1, "method", get_rtype(v_meth)):
+                yield c
 
     for func in cls.iterchildren("{%s}function" % XMLNS):
         if func.get("deprecated") is None:
             empty_class = False
-            yield from insert_function(func.get("name"), get_parameters(func), 1, "static method", get_rtype(func))
+            for c in insert_function(func.get("name"), get_parameters(func), 1, "static method", get_rtype(func)):
+                yield c
 
     if empty_class:
         yield INDENT + "pass\n"
@@ -274,7 +294,6 @@ def process(elements):
         for parent in parents[cls]:
             if "." in parent:
                 yield "import", parent[:parent.rindex(".")]
-
         yield "class", insert_class(cls, parents[cls])
 
     for str in struct:
@@ -315,19 +334,23 @@ def extract_namespace(namespace):
 
     # Constants
     for const in consts:
-        yield from const
+        for c in const:
+            yield c
 
     # Enums
     for enum in enums:
-        yield from enum
+        for c in enum:
+            yield c
 
     # Classes
     for cls in classes:
-        yield from cls
+        for c in cls:
+            yield c
 
     # Functions
     for func in funcs:
-        yield from func
+        for c in func:
+            yield c
 
 
 def parse_gir(gir_path):
@@ -341,7 +364,7 @@ def parse_gir(gir_path):
 def iter_girs(gir_repo):
     """Yield all available gir files"""
     for gir_file in os.listdir(gir_repo):
-        if gir_file not in GIR_FILES:
+        if not USE_ALL_GIR_FILES and gir_file not in GIR_FILES:
             continue
         module_name = gir_file[:gir_file.index("-")]
         yield (module_name, gir_file)
@@ -373,7 +396,10 @@ def main(argv):
         with open(fakegir, "w") as fakegir_file:
             fakegir_file.write("#!/usr/bin/python3\n\n")
             for chunk in content:
-                fakegir_file.write(chunk)
+                fakegir_file.write(chunk.encode('utf8'))
 
 if __name__ == "__main__":
+    if len(sys.argv)>1:
+        if sys.argv[1].lower() == 'all':
+            USE_ALL_GIR_FILES = True
     main(sys.argv)
